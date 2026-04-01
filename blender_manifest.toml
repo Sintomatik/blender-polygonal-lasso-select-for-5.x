@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+id = "poly_select"
+name = "Polygonal Lasso Select"
+version = "2.0.0"
+tagline = "Adds a polygonal lasso select tool to the 3D viewport"
+maintainer = "Adrian Guerra"
+type = "add-on"
+blender_version_min = "5.0.0"
+license = ["SPDX:GPL-2.0-or-later"]
+
+tags = ["User Interface"]
