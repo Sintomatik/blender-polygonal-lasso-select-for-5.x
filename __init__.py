@@ -3,6 +3,7 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 import bmesh
 import math
 import time
@@ -101,6 +102,16 @@ class POLY_OT_select(bpy.types.Operator):
                 if px < xint:
                     crossings += 1
         return crossings % 2 != 0
+
+    # ---- occlusion -------------------------------------------------------
+
+    def _is_xray_or_wireframe(self, context):
+        shading = context.space_data.shading
+        if shading.type == 'WIREFRAME':
+            return True
+        if shading.show_xray:
+            return True
+        return False
 
     # ---- helpers ----------------------------------------------------------
 
@@ -214,7 +225,33 @@ class POLY_OT_select(bpy.types.Operator):
             pts_2d = np.column_stack((screen_x, screen_y))
             inside = self._points_in_poly_np(pts_2d) & valid
 
-            # Apply selection with bounds checking
+            # Occlusion check: hide verts behind faces unless x-ray/wireframe
+            if not self._is_xray_or_wireframe(context):
+                bvh = BVHTree.FromBMesh(bm)
+                mat_inv = mat.inverted()
+
+                if rv3d.is_perspective:
+                    view_origin_local = mat_inv @ rv3d.view_matrix.inverted().translation
+                    for i in np.where(inside)[0]:
+                        v_co = bm.verts[i].co
+                        direction = (v_co - view_origin_local).normalized()
+                        vert_dist = (v_co - view_origin_local).length
+                        hit = bvh.ray_cast(view_origin_local, direction)
+                        if hit[0] is not None and hit[3] < vert_dist - 0.001:
+                            inside[i] = False
+                else:
+                    # Orthographic: parallel rays along view direction
+                    view_dir_local = (mat_inv.to_3x3()
+                                      @ rv3d.view_matrix.inverted().to_3x3()
+                                      @ Vector((0, 0, -1))).normalized()
+                    for i in np.where(inside)[0]:
+                        v_co = bm.verts[i].co
+                        ray_origin = v_co - view_dir_local * 10000.0
+                        hit = bvh.ray_cast(ray_origin, view_dir_local)
+                        if hit[0] is not None and hit[3] < 10000.0 - 0.001:
+                            inside[i] = False
+
+            # Apply selection
             for i in np.where(inside)[0]:
                 if 0 <= i < vert_count:
                     bm.verts[i].select = select_val
@@ -246,8 +283,15 @@ class POLY_OT_select(bpy.types.Operator):
     # ---- modal loop -------------------------------------------------------
 
     _handled_types = {'MOUSEMOVE', 'LEFTMOUSE', 'RIGHTMOUSE', 'ESC', 'BACK_SPACE'}
+    _blocked_types = {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE',
+                      'TRACKPADPAN', 'TRACKPADZOOM', 'NUMPAD_PERIOD',
+                      'NDOF_MOTION'}
 
     def modal(self, context, event):
+        # Block viewport navigation (orbit, pan, zoom) during selection
+        if event.type in self._blocked_types:
+            return {'RUNNING_MODAL'}
+
         if event.type not in self._handled_types:
             return {'PASS_THROUGH'}
 
